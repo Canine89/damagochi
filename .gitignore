@@ -1,0 +1,7 @@
+.build/
+build/
+dist/
+art/out/
+.DS_Store
+*.dSYM
+__pycache__/
