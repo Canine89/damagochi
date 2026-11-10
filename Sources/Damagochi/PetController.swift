@@ -77,6 +77,11 @@ final class PetController: NSObject {
     private var shownFacingRight = false
     private var shownOrigin = NSPoint(x: -1, y: -1)
     private var panel: PanelController!
+    private let bubble = BubbleController()
+    private let fence = FenceController()
+    private var screenWorld: World                       // 울타리를 적용하기 전의 화면 범위
+    private var bubbleCountdown: TimeInterval = 8        // 실행 직후 한 번 보여 준다
+    private var headTop: CGFloat = 0                     // 머리 위 빈 줄 수 (논리 px)
     private var bag = Set<AnyCancellable>()
 
     private(set) var isHidden = false
@@ -88,7 +93,9 @@ final class PetController: NSObject {
         let rect = NSRect(x: 0, y: 0, width: s, height: s)
         window = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         view = PetView(frame: rect)
-        brain = PetBrain(world: WorldScanner.scan(), scale: s / 96)
+        screenWorld = WorldScanner.scan()
+        brain = PetBrain(world: screenWorld, scale: s / 96,
+                         personality: .of(Settings.shared.personality(for: Settings.shared.animal)))
         sheet = SpriteSheet(animal: Settings.shared.animal)
         super.init()
 
@@ -109,18 +116,36 @@ final class PetController: NSObject {
             self?.brain.endGreet()
         }
 
+        headTop = sheet?.contentBounds([.idle0])?.minY ?? 0
         Settings.shared.$animal.dropFirst().sink { [weak self] animal in
-            self?.sheet = SpriteSheet(animal: animal)
-            self?.shownFrame = nil
+            guard let self else { return }
+            self.sheet = SpriteSheet(animal: animal)
+            self.headTop = self.sheet?.contentBounds([.idle0])?.minY ?? 0
+            self.shownFrame = nil
+            self.applyPersonality(Settings.shared.personality(for: animal), announce: true)
+        }.store(in: &bag)
+        Settings.shared.$personalities.dropFirst().sink { [weak self] all in
+            let animal = Settings.shared.animal
+            let kind = Personality.Kind(rawValue: all[animal.rawValue] ?? "") ?? .playful
+            self?.applyPersonality(kind, announce: true)
+        }.store(in: &bag)
+        Settings.shared.$fenceEnabled.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            self?.rescanWorld()
+        }.store(in: &bag)
+        fence.onChange = { [weak self] in self?.applyWorld() }
+        Settings.shared.$bubbleMinutes.dropFirst().sink { [weak self] minutes in
+            // 주기를 바꾸면 곧바로 한 번 보여 줘서 어떻게 뜨는지 알 수 있게 한다
+            if minutes > 0 { self?.bubbleCountdown = 0.6 } else { self?.bubble.hide() }
         }.store(in: &bag)
         Settings.shared.$size.dropFirst().sink { [weak self] newSize in
             self?.resize(to: CGFloat(newSize))
         }.store(in: &bag)
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in
-            self?.brain.world = WorldScanner.scan()
+            self?.rescanWorld()
         }
 
+        rescanWorld()
         render()
         window.orderFrontRegardless()
         start()
@@ -143,10 +168,68 @@ final class PetController: NSObject {
         worldAge += dt
         if worldAge > 2 {                 // Dock 크기·위치가 바뀌었을 수 있으니 주기적으로 다시 확인
             worldAge = 0
-            brain.world = WorldScanner.scan()
+            rescanWorld()
         }
         brain.energetic = monitor.busyCount > 0
         brain.tick(dt)
+        tickBubble(dt)
+        render()
+    }
+
+    // MARK: - 세계 · 성격
+
+    /// 화면(Dock 포함) 상태를 다시 읽고 울타리를 그에 맞춰 세운다.
+    private func rescanWorld() {
+        screenWorld = WorldScanner.scan()
+        fence.layout(in: screenWorld, petSize: size, around: brain.x, visible: !isHidden)
+        applyWorld()
+    }
+
+    /// 울타리가 있으면 그 안쪽만 펫의 세계가 된다.
+    private func applyWorld() {
+        var w = screenWorld
+        if let r = fence.range {
+            w.minX = max(w.minX, r.lowerBound)
+            w.maxX = min(w.maxX, r.upperBound)
+        }
+        if brain.world != w { brain.world = w }
+    }
+
+    func recenterFence() {
+        fence.recenter(around: brain.x)
+    }
+
+    private func applyPersonality(_ kind: Personality.Kind, announce: Bool) {
+        let p = Personality.of(kind)
+        guard brain.personality != p else { return }
+        brain.personality = p
+        if announce { say("나는 \(kind.label)!", for: 4) }
+    }
+
+    // MARK: - 말풍선
+
+    /// 설정한 주기마다 주간 잔여량을 말풍선으로 잠깐 보여 준다.
+    private func tickBubble(_ dt: TimeInterval) {
+        let minutes = Settings.shared.bubbleMinutes
+        guard minutes > 0 else { return }
+        bubbleCountdown -= dt
+        guard bubbleCountdown <= 0 else { return }
+        let lines: [BubbleLine] = monitor.usages.compactMap { u in
+            guard let w = u.windows.first(where: \.isWeekly) else { return nil }
+            return BubbleLine(name: u.service == .claude ? "Claude" : "Codex", remaining: w.remaining)
+        }
+        if lines.isEmpty || panel.isShown || brain.mode == .held {
+            bubbleCountdown = 30                       // 지금은 보여 줄 수 없으니 조금 뒤에 다시
+            return
+        }
+        bubbleCountdown = TimeInterval(minutes * 60)
+        bubble.show(BubbleContent(title: "주간 잔여", lines: lines), for: 6)
+    }
+
+    /// 펫이 짧은 말을 한다 (업데이트 알림 등).
+    func say(_ message: String, for duration: TimeInterval = 8) {
+        guard !isHidden, !panel.isShown else { return }
+        bubble.show(BubbleContent(message: message), for: duration)
         render()
     }
 
@@ -160,6 +243,9 @@ final class PetController: NSObject {
             window.setFrameOrigin(origin)
             shownOrigin = origin
         }
+        if bubble.isShown, let visible = (window.screen ?? NSScreen.screens.first)?.frame {
+            bubble.place(centerX: brain.x, bottomY: origin.y + size - headTop * px + 1, within: visible)
+        }
         let frame = brain.frame, right = brain.facing > 0
         if frame != shownFrame || right != shownFacingRight, let sheet {
             view.show(sheet[frame], facingRight: right)
@@ -170,6 +256,7 @@ final class PetController: NSObject {
 
     private func resize(to newSize: CGFloat) {
         brain.scale = newSize / 96
+        defer { rescanWorld() }
         window.setContentSize(NSSize(width: newSize, height: newSize))
         view.frame = NSRect(x: 0, y: 0, width: newSize, height: newSize)
         shownFrame = nil
@@ -185,6 +272,7 @@ final class PetController: NSObject {
             return
         }
         guard !isHidden else { return }
+        bubble.hide(animated: false)
         monitor.refresh()
         monitor.fast = true
         brain.beginGreet()
@@ -194,6 +282,7 @@ final class PetController: NSObject {
 
     func drag(to mouse: NSPoint) {
         panel.close()
+        bubble.hide(animated: false)
         // 몸통 가운데쯤을 잡고 있는 것처럼 보이게 한다
         brain.hold(x: mouse.x, height: mouse.y - brain.world.groundY - size * 0.3)
         render()
@@ -207,6 +296,7 @@ final class PetController: NSObject {
         isHidden = hidden
         if hidden {
             panel.close()
+            bubble.hide(animated: false)
             timer?.invalidate()
             timer = nil
             window.orderOut(nil)
@@ -214,10 +304,6 @@ final class PetController: NSObject {
             window.orderFrontRegardless()
             start()
         }
-    }
-
-    /// 메뉴 막대 아이콘 등에 쓸 현재 동물의 정지 그림
-    func icon(points: CGFloat) -> NSImage? {
-        sheet?.image(.idle0, points: points)
+        rescanWorld()               // 울타리도 같이 숨기거나 보인다
     }
 }

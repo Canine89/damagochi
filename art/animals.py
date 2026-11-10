@@ -55,6 +55,11 @@ STAND = [(0, 2)] * 4
 SPREAD = [(-1, 2), (0, 2), (0, 2), (1, 2)]       # 앞뒤로 쭉 뻗음
 TUCK = [(2, 1), (1, 1), (-1, 1), (-2, 1)]        # 배 밑으로 모음
 SHORT = [(0, 1)] * 4
+# 걷기: 다리를 번갈아 내딛는다 (몸은 거의 흔들리지 않음)
+WALK_A = [(-1, 2), (1, 2), (-1, 2), (1, 2)]      # 앞다리·뒷다리 각각 벌림
+WALK_B = [(0, 1), (0, 2), (0, 1), (0, 2)]        # 한쪽 다리 들기
+WALK_C = [(1, 2), (-1, 2), (1, 2), (-1, 2)]      # 모음
+WALK_D = [(0, 2), (0, 1), (0, 2), (0, 1)]        # 반대쪽 다리 들기
 
 # 프레임 순서 = 앱(Sources/Damagochi/Sprites.swift)의 인덱스와 일치해야 한다
 FRAMES = [
@@ -70,6 +75,10 @@ FRAMES = [
     ("fall", Pose(legs=SPREAD, tail=-1)),
     ("happy", Pose(lift=1, eyes="happy", tail=-1)),
     ("sleep", Pose(squash=1, lift=-1, legs=SHORT, eyes="blink", tail=1)),
+    ("walk0", Pose(legs=WALK_A)),
+    ("walk1", Pose(legs=WALK_B, tail=1)),
+    ("walk2", Pose(legs=WALK_C)),
+    ("walk3", Pose(legs=WALK_D, tail=1)),
 ]
 
 
@@ -170,9 +179,9 @@ def cat(p):
     s = Sprite()
     o, b, t = p.o, p.b, p.o + p.tail
     F, D = hx("#aaa59f"), hx("#7c756f")
-    tail = bmp(24, 8 + t, ["..tt.", "..tt.", "..tt.", "..tt.", "..tt.", ".ttt.", "ttt..", "tt...", "tt..."])["t"]
+    tail = bmp(24, 9 + t, ["..tt.", "..tt.", "..tt.", "..tt.", ".ttt.", "ttt..", "tt...", "tt..."])["t"]
     s.group((tail, F))
-    s.fill(rect(24, 9 + t, 30, 9 + t) | rect(24, 11 + t, 30, 11 + t), D, clip=tail)
+    s.fill(rect(24, 10 + t, 30, 10 + t) | rect(24, 12 + t, 30, 12 + t), D, clip=tail)
     body = rrect(4, 14 + o, 24, 26 + b, **LOAF)
     ear1 = bmp(6, 11 + o, [".a.", "aaa", "aaa", "aaa", "aaa"])["a"]
     ear2 = bmp(12, 11 + o, [".a.", "aaa", "aaa"])["a"]
@@ -336,6 +345,18 @@ def chick(p):
     return s
 
 
+def fence():
+    """울타리 한 토막 (16x16): 뾰족한 말뚝 3개 + 가로대 2줄. 바닥에 딱 붙는다."""
+    s = Sprite()
+    WOOD, RAIL = hx("#e6b877"), hx("#c98f52")
+    pickets = set()
+    for x in (1, 6, 11):
+        pickets |= rect(x, 3, x + 2, 14) | {(x + 1, 2)}
+    rails = rect(1, 6, 13, 7) | rect(1, 11, 13, 12)
+    s.group((rails, RAIL), (pickets, WOOD))
+    return s
+
+
 ANIMALS = [
     ("cat", "고양이", cat),
     ("dog", "강아지", dog),
@@ -367,6 +388,8 @@ def main():
             sheet.paste(fn(pose).image(), (i * G, 0))
         sheet.save(os.path.join(SPRITE_DIR, f"{key}.png"))
         fn(Pose()).image(2).save(os.path.join(OUT_DIR, f"{key}_64.png"))
+
+    fence().image().crop((0, 0, 16, 16)).save(os.path.join(SPRITE_DIR, "fence.png"))
 
     # 8종 비교
     S, CELL, LAB = 8, 256, 40

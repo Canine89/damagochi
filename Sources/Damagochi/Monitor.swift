@@ -33,7 +33,10 @@ struct UsageWindow: Identifiable, Equatable {
     let usedPercent: Double
     let resetsAt: Date?
 
+    static let weeklyLabel = "주간"
+
     var id: String { label }
+    var isWeekly: Bool { label == UsageWindow.weeklyLabel }
     var remaining: Double { min(100, max(0, 100 - usedPercent)) }
 }
 
